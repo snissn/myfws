@@ -245,40 +245,59 @@ async function connectWallet() {
 }
 
 // ------------------------------------------
+// Helper function to deploy contracts
+// ------------------------------------------
+async function deployContract(abi, bytecode, signer, constructorArgs = []) {
+  if (!signer) {
+    alert("Please connect your wallet first.");
+    return null;
+  }
+
+  if (!abi || !bytecode) {
+    alert("Artifacts not loaded. Please check console for errors.");
+    return null;
+  }
+
+  try {
+    const factory = new ethers.ContractFactory(abi, bytecode, signer);
+    const contract = await factory.deploy(...constructorArgs);
+
+    console.log("Deploying contract. TX Hash:", contract.deploymentTransaction().hash);
+
+    // Wait until the contract is mined and deployed
+    const receipt = await contract.deploymentTransaction().wait();
+    console.log("Contract deployed at:", contract.target, "in block:", receipt.blockNumber);
+
+    return contract.target 
+  } catch (err) {
+    console.error("Deployment error:", err);
+    alert(`Deployment error: ${err.message}`);
+    return null;
+  }
+}
+
+
+// ------------------------------------------
 // 4. Deploy ServiceFramework
 // ------------------------------------------
 async function deployServiceFramework(evt) {
   evt.preventDefault();
-  if (!signer) {
-    alert("Please connect your wallet first.");
+
+  const feePercent = document.getElementById("protocolFeePercentage")?.value;
+  const feeRecipient = document.getElementById("protocolFeeRecipient")?.value;
+
+  if (!feePercent || !feeRecipient) {
+    alert("Please enter both the protocol fee percentage and recipient address.");
     return;
   }
-  if (!serviceFrameworkABI || !serviceFrameworkBytecode) {
-    alert("Artifacts not loaded. Please check console for errors.");
-    return;
-  }
 
-  const feePercent = document.getElementById("protocolFeePercentage").value;
-  const feeRecipient = document.getElementById("protocolFeeRecipient").value;
+  const address = await deployContract(serviceFrameworkABI, serviceFrameworkBytecode, signer, [feePercent, feeRecipient]);
 
-  try {
-    const contractFactory = new ethers.ContractFactory(
-      serviceFrameworkABI,
-      serviceFrameworkBytecode,
-      signer
-    );
-    const contract = await contractFactory.deploy(feePercent, feeRecipient);
-    console.log("Deploying ServiceFramework. TX Hash:", contract.deployTransaction.hash);
-
-    await contract.deployed();
-    serviceFrameworkAddress = contract.address;
-    localStorage.setItem("serviceFrameworkAddress", serviceFrameworkAddress);
-
-    document.getElementById("serviceFrameworkAddressLabel").textContent = serviceFrameworkAddress;
-    alert("ServiceFramework deployed at: " + serviceFrameworkAddress);
-  } catch (err) {
-    console.error(err);
-    alert("Deployment error: " + err.message);
+  if (address) {
+    serviceFrameworkAddress = address;
+    localStorage.setItem("serviceFrameworkAddress", address);
+    document.getElementById("serviceFrameworkAddressLabel").textContent = address;
+    alert(`ServiceFramework deployed at: ${address}`);
   }
 }
 
@@ -286,35 +305,16 @@ async function deployServiceFramework(evt) {
 // 5. Deploy GreetingService
 // ------------------------------------------
 async function deployGreetingService() {
-  if (!signer) {
-    alert("Please connect your wallet first.");
-    return;
-  }
-  if (!greetingServiceABI || !greetingServiceBytecode) {
-    alert("Artifacts not loaded. Please check console for errors.");
-    return;
-  }
+  const address = await deployContract(greetingServiceABI, greetingServiceBytecode, signer);
 
-  try {
-	  console.log( greetingServiceABI, greetingServiceBytecode, signer)
-    const greetingFactory = new ethers.ContractFactory(
-      greetingServiceABI,
-      greetingServiceBytecode,
-      signer
-    );
-
-    const greetingContract = await greetingFactory.deploy();
-    console.log("Deploying GreetingService. TX Hash:", greetingContract);
-    greetingServiceAddress = greetingContract.address;
-    localStorage.setItem("greetingServiceAddress", greetingServiceAddress);
-
-    document.getElementById("greetingServiceAddressLabel").textContent = greetingServiceAddress;
-    alert("GreetingService deployed at: " + greetingServiceAddress);
-  } catch (err) {
-    console.error(err);
-    alert("Deployment error: " + err.message);
+  if (address) {
+    greetingServiceAddress = address;
+    localStorage.setItem("greetingServiceAddress", address);
+    document.getElementById("greetingServiceAddressLabel").textContent = address;
+    alert(`GreetingService deployed at: ${address}`);
   }
 }
+
 
 // ------------------------------------------
 // 6. Register Greeting Service
@@ -340,12 +340,10 @@ async function registerGreetingService() {
       signer
     );
 
-    // For simplicity: fee=0, paymentToken=0x0, accessType=0 (Public), tokenGate=0x0
-    // gasLimit=200000, metadata="GreetingDemo"
     const fee = 0;
-    const paymentToken = ethers.constants.AddressZero;
+    const paymentToken = ethers.ZeroAddress;
     const accessType = 0; // Public
-    const tokenGate = ethers.constants.AddressZero;
+    const tokenGate = ethers.ZeroAddress;
     const gasLimit = 200000;
     const metadata = "GreetingDemo";
 
@@ -359,13 +357,20 @@ async function registerGreetingService() {
       gasLimit,
       metadata
     );
+
     const receipt = await tx.wait();
+    console.log(receipt);
 
     let registeredServiceId;
-    for (const event of receipt.events) {
-      if (event.event === "ServiceRegistered") {
-        registeredServiceId = event.args.serviceId.toString();
-        break;
+    for (const log of receipt.logs) {
+      try {
+        const parsedLog = serviceFramework.interface.parseLog(log);
+        if (parsedLog.name === "ServiceRegistered") {
+          registeredServiceId = parsedLog.args.serviceId.toString();
+          break;
+        }
+      } catch (err) {
+        // Ignore logs that can't be parsed
       }
     }
 
@@ -375,7 +380,7 @@ async function registerGreetingService() {
     }
 
     document.getElementById("registeredServiceId").textContent = registeredServiceId;
-    alert("Greeting Service registered! Service ID: " + registeredServiceId);
+    alert(`Greeting Service registered! Service ID: ${registeredServiceId}`);
   } catch (err) {
     console.error(err);
     alert("Registration error: " + err.message);
@@ -399,17 +404,23 @@ async function executeGreeting(evt) {
   const serviceId = document.getElementById("execServiceId").value;
   const userName = document.getElementById("execName").value;
 
-  // Encode parameter for greet(string)
-  const data = ethers.utils.defaultAbiCoder.encode(["string"], [userName]);
+  if (!serviceId || !userName) {
+    alert("Please provide both Service ID and Name.");
+    return;
+  }
 
   try {
+    const data = ethers.AbiCoder.defaultAbiCoder().encode(["string"], [userName]);
+
     const serviceFramework = new ethers.Contract(
       serviceFrameworkAddress,
       serviceFrameworkABI,
       signer
     );
+
     const tx = await serviceFramework.executeService(serviceId, data);
     await tx.wait();
+
     alert("Greeting executed successfully!");
   } catch (err) {
     console.error(err);
@@ -436,13 +447,15 @@ async function viewLatestGreeting() {
       greetingServiceABI,
       provider
     );
-    const current = await greetingService.lastGreeting();
-    document.getElementById("currentGreeting").textContent = current;
+
+    const currentGreeting = await greetingService.lastGreeting();
+    document.getElementById("currentGreeting").textContent = currentGreeting;
   } catch (err) {
     console.error(err);
     alert("Error retrieving greeting: " + err.message);
   }
 }
+
 </script>
 </body>
 </html>
