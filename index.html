@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>FEVM ServiceFramework Demo (with fetch)</title>
+  <!-- Bootstrap CSS -->
+  <link
+    rel="stylesheet"
+    href="https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/css/bootstrap.min.css"
+  />
+  <!-- Ethers.js (UMD build for browsers) -->
+  <script src="https://cdn.jsdelivr.net/npm/ethers/dist/ethers.umd.min.js"></script>
+</head>
+<body class="bg-light">
+<div class="container py-5">
+  <h1 class="mb-4">FEVM ServiceFramework Demo (with fetch)</h1>
+
+  <!-- Wallet Connection -->
+  <div class="mb-4">
+    <button id="connectWalletBtn" class="btn btn-primary">Connect Wallet</button>
+    <span id="walletAddress" class="ms-3 text-success fw-bold"></span>
+  </div>
+
+  <hr/>
+
+  <!-- Deploy ServiceFramework -->
+  <div class="card mb-4">
+    <div class="card-header">1. Deploy ServiceFramework</div>
+    <div class="card-body">
+      <form id="deployFrameworkForm">
+        <div class="mb-3">
+          <label for="protocolFeePercentage" class="form-label">
+            Protocol Fee Percentage (e.g. 5 for 5%)
+          </label>
+          <input
+            type="number"
+            step="1"
+            id="protocolFeePercentage"
+            class="form-control"
+            placeholder="5"
+            required
+          />
+        </div>
+        <div class="mb-3">
+          <label for="protocolFeeRecipient" class="form-label">
+            Protocol Fee Recipient
+          </label>
+          <input
+            type="text"
+            id="protocolFeeRecipient"
+            class="form-control"
+            placeholder="0x..."
+            required
+          />
+        </div>
+        <button type="submit" class="btn btn-success">Deploy ServiceFramework</button>
+      </form>
+      <div class="mt-2">
+        <strong>Deployed ServiceFramework:</strong>
+        <span id="serviceFrameworkAddressLabel" class="ms-2"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Deploy GreetingService -->
+  <div class="card mb-4">
+    <div class="card-header">2. Deploy GreetingService</div>
+    <div class="card-body">
+      <button id="deployGreetingBtn" class="btn btn-success mb-3">Deploy GreetingService</button>
+      <div>
+        <strong>Deployed GreetingService:</strong>
+        <span id="greetingServiceAddressLabel" class="ms-2"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Register Greeting Service -->
+  <div class="card mb-4">
+    <div class="card-header">3. Register Greeting Service in Framework</div>
+    <div class="card-body">
+      <p class="small text-muted">
+        Uses the greet(string) function. Zero fee and Public access for demo.
+      </p>
+      <button id="registerGreetingBtn" class="btn btn-info">Register Service</button>
+      <div class="mt-2">
+        <strong>Registered Service ID:</strong>
+        <span id="registeredServiceId" class="ms-2"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Execute Greeting -->
+  <div class="card mb-4">
+    <div class="card-header">4. Execute Greeting</div>
+    <div class="card-body">
+      <form id="executeGreetingForm">
+        <div class="mb-3">
+          <label for="execServiceId" class="form-label">Service ID</label>
+          <input
+            type="number"
+            id="execServiceId"
+            class="form-control"
+            placeholder="Enter the registered Service ID"
+            required
+          />
+        </div>
+        <div class="mb-3">
+          <label for="execName" class="form-label">Your Name</label>
+          <input
+            type="text"
+            id="execName"
+            class="form-control"
+            placeholder="Alice"
+            required
+          />
+        </div>
+        <button type="submit" class="btn btn-primary">Call greet(string)</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- View Latest Greeting -->
+  <div class="card mb-4">
+    <div class="card-header">5. View Latest Greeting</div>
+    <div class="card-body">
+      <button id="viewGreetingBtn" class="btn btn-secondary">Load Current Greeting</button>
+      <div class="mt-3">
+        <strong>Current Greeting:</strong>
+        <span id="currentGreeting" class="ms-2"></span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+/**
+ * 1. We'll load ABI and Bytecode from "ExportedArtifacts.json" using fetch.
+ *    This file should contain something like:
+ *    {
+ *       "ServiceFramework": {
+ *         "abi": [...],
+ *         "bytecode": "0x60036..."
+ *       },
+ *       "GreetingService": {
+ *         "abi": [...],
+ *         "bytecode": "0x60036..."
+ *       }
+ *    }
+ */
+
+let serviceFrameworkABI, serviceFrameworkBytecode;
+let greetingServiceABI, greetingServiceBytecode;
+let greetSelector;
+
+// 2. Global Vars for Ethers
+let provider;
+let signer;
+let serviceFrameworkContract;
+let greetingServiceContract;
+
+// Addresses stored in localStorage
+let serviceFrameworkAddress = localStorage.getItem("serviceFrameworkAddress") || "";
+let greetingServiceAddress = localStorage.getItem("greetingServiceAddress") || "";
+
+// On page load, attempt to fetch our artifacts & init
+document.addEventListener("DOMContentLoaded", async () => {
+  if (serviceFrameworkAddress) {
+    document.getElementById("serviceFrameworkAddressLabel").textContent = serviceFrameworkAddress;
+  }
+  if (greetingServiceAddress) {
+    document.getElementById("greetingServiceAddressLabel").textContent = greetingServiceAddress;
+  }
+
+  await loadArtifacts();
+
+  // Once we have the artifacts, set up event listeners
+  setupEventListeners();
+});
+
+/**
+ * Fetches "ExportedArtifacts.json" and extracts:
+ *   - serviceFrameworkABI, serviceFrameworkBytecode
+ *   - greetingServiceABI, greetingServiceBytecode
+ * Then computes greetSelector from "greet(string)" signature.
+ */
+async function loadArtifacts() {
+  try {
+    // Adjust path if needed
+    const response = await fetch("./artifacts/ExportedArtifacts.json");
+    const artifacts = await response.json();
+
+    serviceFrameworkABI = artifacts.ServiceFramework.abi;
+    serviceFrameworkBytecode = artifacts.ServiceFramework.bytecode;
+    greetingServiceABI = artifacts.GreetingService.abi;
+    greetingServiceBytecode = artifacts.GreetingService.bytecode;
+
+    // For greet(string), compute 4-byte selector
+    greetSelector = ethers.keccak256(ethers.toUtf8Bytes("greet(string)")).substring(0,10);
+
+    console.log("Artifacts loaded successfully!", artifacts);
+  } catch (error) {
+    console.error("Failed to load artifacts:", error);
+    alert("Error loading contract artifacts. Check console or JSON path.");
+  }
+}
+
+/**
+ * Sets up click/submit event listeners for the UI once artifacts are loaded.
+ */
+function setupEventListeners() {
+  // Connect Wallet
+  document.getElementById("connectWalletBtn").addEventListener("click", connectWallet);
+
+  // Deploy ServiceFramework
+  document.getElementById("deployFrameworkForm").addEventListener("submit", deployServiceFramework);
+
+  // Deploy GreetingService
+  document.getElementById("deployGreetingBtn").addEventListener("click", deployGreetingService);
+
+  // Register Greeting Service
+  document.getElementById("registerGreetingBtn").addEventListener("click", registerGreetingService);
+
+  // Execute Greeting
+  document.getElementById("executeGreetingForm").addEventListener("submit", executeGreeting);
+
+  // View Greeting
+  document.getElementById("viewGreetingBtn").addEventListener("click", viewLatestGreeting);
+}
+
+// ------------------------------------------
+// 3. Connect Wallet
+// ------------------------------------------
+async function connectWallet() {
+  if (window.ethereum) {
+    provider = new ethers.BrowserProvider(window.ethereum);
+
+    await provider.send("eth_requestAccounts", []);
+    signer = await provider.getSigner();
+    const address = signer.address
+    document.getElementById("walletAddress").textContent = address;
+    console.log("Connected to:", address);
+  } else {
+    alert("Please install MetaMask to use this demo.");
+  }
+}
+
+// ------------------------------------------
+// 4. Deploy ServiceFramework
+// ------------------------------------------
+async function deployServiceFramework(evt) {
+  evt.preventDefault();
+  if (!signer) {
+    alert("Please connect your wallet first.");
+    return;
+  }
+  if (!serviceFrameworkABI || !serviceFrameworkBytecode) {
+    alert("Artifacts not loaded. Please check console for errors.");
+    return;
+  }
+
+  const feePercent = document.getElementById("protocolFeePercentage").value;
+  const feeRecipient = document.getElementById("protocolFeeRecipient").value;
+
+  try {
+    const contractFactory = new ethers.ContractFactory(
+      serviceFrameworkABI,
+      serviceFrameworkBytecode,
+      signer
+    );
+    const contract = await contractFactory.deploy(feePercent, feeRecipient);
+    console.log("Deploying ServiceFramework. TX Hash:", contract.deployTransaction.hash);
+
+    await contract.deployed();
+    serviceFrameworkAddress = contract.address;
+    localStorage.setItem("serviceFrameworkAddress", serviceFrameworkAddress);
+
+    document.getElementById("serviceFrameworkAddressLabel").textContent = serviceFrameworkAddress;
+    alert("ServiceFramework deployed at: " + serviceFrameworkAddress);
+  } catch (err) {
+    console.error(err);
+    alert("Deployment error: " + err.message);
+  }
+}
+
+// ------------------------------------------
+// 5. Deploy GreetingService
+// ------------------------------------------
+async function deployGreetingService() {
+  if (!signer) {
+    alert("Please connect your wallet first.");
+    return;
+  }
+  if (!greetingServiceABI || !greetingServiceBytecode) {
+    alert("Artifacts not loaded. Please check console for errors.");
+    return;
+  }
+
+  try {
+	  console.log( greetingServiceABI, greetingServiceBytecode, signer)
+    const greetingFactory = new ethers.ContractFactory(
+      greetingServiceABI,
+      greetingServiceBytecode,
+      signer
+    );
+
+    const greetingContract = await greetingFactory.deploy();
+    console.log("Deploying GreetingService. TX Hash:", greetingContract);
+    greetingServiceAddress = greetingContract.address;
+    localStorage.setItem("greetingServiceAddress", greetingServiceAddress);
+
+    document.getElementById("greetingServiceAddressLabel").textContent = greetingServiceAddress;
+    alert("GreetingService deployed at: " + greetingServiceAddress);
+  } catch (err) {
+    console.error(err);
+    alert("Deployment error: " + err.message);
+  }
+}
+
+// ------------------------------------------
+// 6. Register Greeting Service
+// ------------------------------------------
+async function registerGreetingService() {
+  if (!signer) {
+    alert("Please connect your wallet first.");
+    return;
+  }
+  if (!serviceFrameworkAddress) {
+    alert("ServiceFramework not deployed or not set.");
+    return;
+  }
+  if (!greetingServiceAddress) {
+    alert("GreetingService not deployed or not set.");
+    return;
+  }
+
+  try {
+    const serviceFramework = new ethers.Contract(
+      serviceFrameworkAddress,
+      serviceFrameworkABI,
+      signer
+    );
+
+    // For simplicity: fee=0, paymentToken=0x0, accessType=0 (Public), tokenGate=0x0
+    // gasLimit=200000, metadata="GreetingDemo"
+    const fee = 0;
+    const paymentToken = ethers.constants.AddressZero;
+    const accessType = 0; // Public
+    const tokenGate = ethers.constants.AddressZero;
+    const gasLimit = 200000;
+    const metadata = "GreetingDemo";
+
+    const tx = await serviceFramework.registerService(
+      greetingServiceAddress,
+      greetSelector,
+      fee,
+      paymentToken,
+      accessType,
+      tokenGate,
+      gasLimit,
+      metadata
+    );
+    const receipt = await tx.wait();
+
+    let registeredServiceId;
+    for (const event of receipt.events) {
+      if (event.event === "ServiceRegistered") {
+        registeredServiceId = event.args.serviceId.toString();
+        break;
+      }
+    }
+
+    if (!registeredServiceId) {
+      alert("Could not find ServiceRegistered event in transaction receipt.");
+      return;
+    }
+
+    document.getElementById("registeredServiceId").textContent = registeredServiceId;
+    alert("Greeting Service registered! Service ID: " + registeredServiceId);
+  } catch (err) {
+    console.error(err);
+    alert("Registration error: " + err.message);
+  }
+}
+
+// ------------------------------------------
+// 7. Execute Greeting
+// ------------------------------------------
+async function executeGreeting(evt) {
+  evt.preventDefault();
+  if (!signer) {
+    alert("Please connect your wallet first.");
+    return;
+  }
+  if (!serviceFrameworkAddress) {
+    alert("ServiceFramework is not deployed/set.");
+    return;
+  }
+
+  const serviceId = document.getElementById("execServiceId").value;
+  const userName = document.getElementById("execName").value;
+
+  // Encode parameter for greet(string)
+  const data = ethers.utils.defaultAbiCoder.encode(["string"], [userName]);
+
+  try {
+    const serviceFramework = new ethers.Contract(
+      serviceFrameworkAddress,
+      serviceFrameworkABI,
+      signer
+    );
+    const tx = await serviceFramework.executeService(serviceId, data);
+    await tx.wait();
+    alert("Greeting executed successfully!");
+  } catch (err) {
+    console.error(err);
+    alert("Execution error: " + err.message);
+  }
+}
+
+// ------------------------------------------
+// 8. View Latest Greeting
+// ------------------------------------------
+async function viewLatestGreeting() {
+  if (!provider) {
+    alert("Please connect your wallet (or any provider) first.");
+    return;
+  }
+  if (!greetingServiceAddress) {
+    alert("GreetingService not deployed/set.");
+    return;
+  }
+
+  try {
+    const greetingService = new ethers.Contract(
+      greetingServiceAddress,
+      greetingServiceABI,
+      provider
+    );
+    const current = await greetingService.lastGreeting();
+    document.getElementById("currentGreeting").textContent = current;
+  } catch (err) {
+    console.error(err);
+    alert("Error retrieving greeting: " + err.message);
+  }
+}
+</script>
+</body>
+</html>
+
+
